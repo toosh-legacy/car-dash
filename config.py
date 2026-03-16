@@ -3,7 +3,7 @@
 # --- Screen ---
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 480
-FPS = 60  # Frames per second 
+FPS = 30  # Frames per second 
 # --- Colors (R, G, B) ---
 BLACK       = (0, 0, 0)
 WHITE       = (255, 255, 255)

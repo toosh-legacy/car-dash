@@ -8,6 +8,9 @@ import sys
 # Import our own files
 import config
 import simulator
+from ui.gauges import draw_arc_gauge, draw_bar_gauge
+from ui.radar_alert import draw_radar_panel
+from ui.map_view import draw_map_panel
 
 # --- Setup ---
 pygame.init()  # Always call this first — starts up all pygame systems
@@ -53,40 +56,40 @@ def draw_background():
     )
 
 
-def draw_map_panel(gps_data):
-    """Left panel — GPS placeholder for now."""
-    # We'll build a real map later. For now, just show coordinates.
-    label = font_small.render("GPS / MAP", True, config.ACCENT)
-    screen.blit(label, (20, 20))  # blit = "draw this surface at this position"
-
-    lat_text = font_medium.render(f"LAT:  {gps_data['lat']:.5f}", True, config.WHITE)
-    lon_text = font_medium.render(f"LON:  {gps_data['lon']:.5f}", True, config.WHITE)
-
-    screen.blit(lat_text, (20, 60))
-    screen.blit(lon_text, (20, 100))
-
-
 def draw_gauge_panel(speed, rpm):
-    """Top-right panel — Speed and RPM readouts."""
-    x_offset = config.MAP_PANEL_WIDTH + 20  # start drawing 20px inside right panel
+    gauge_center_x = config.MAP_PANEL_WIDTH + (config.GAUGE_PANEL_WIDTH // 2)
+    x_offset = config.MAP_PANEL_WIDTH + 20
 
-    # Section label
-    label = font_small.render("GAUGES", True, config.ACCENT)
-    screen.blit(label, (x_offset, 20))
+    # Radar panel starts here — we must stay above this line
+    radar_top = config.SCREEN_HEIGHT - config.RADAR_PANEL_HEIGHT  # = 312px
 
-    # Speed
-    speed_label = font_small.render("SPEED (mph)", True, config.WHITE)
-    speed_value = font_large.render(f"{int(speed)}", True, config.GREEN)
-    screen.blit(speed_label, (x_offset, 50))
-    screen.blit(speed_value, (x_offset, 75))
+    # Arc speedometer — reduced radius so it fits cleanly
+    draw_arc_gauge(
+        screen,
+        value     = speed,
+        max_value = config.MAX_SPEED,
+        x         = gauge_center_x,
+        y         = 130,          # moved up slightly
+        radius    = 100,          # reduced from 120 → 100
+        label     = "SPEED",
+        unit      = "mph",
+        color     = config.GREEN
+    )
 
-    # RPM
-    rpm_label = font_small.render("RPM", True, config.WHITE)
-    rpm_value  = font_large.render(f"{int(rpm)}", True, config.YELLOW)
-    screen.blit(rpm_label, (x_offset, 150))
-    screen.blit(rpm_value, (x_offset, 175))
-
-
+    # RPM bar — positioned well above the radar divider line
+    # radar_top - 70 gives us comfortable padding above the line
+    bar_y = radar_top - 70
+    draw_bar_gauge(
+        screen,
+        value     = rpm,
+        max_value = config.MAX_RPM,
+        x         = x_offset,
+        y         = bar_y,
+        width     = config.GAUGE_PANEL_WIDTH - 40,
+        height    = 22,
+        label     = "RPM",
+        color     = config.ACCENT
+    )
 def draw_radar_panel(radar_data):
     """Bottom-right panel — Radar alert display."""
     x_offset = config.MAP_PANEL_WIDTH + 20
@@ -114,35 +117,34 @@ def draw_radar_panel(radar_data):
 # ─────────────────────────────────────────
 
 def main():
-    while True:
+    frame_count = 0
 
+    while True:
         # 1. HANDLE EVENTS
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:  # User clicked the X button
+            if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:  # Press ESC to quit
+                if event.key == pygame.K_ESCAPE:
                     pygame.quit()
                     sys.exit()
 
-        # 2. UPDATE DATA — ask simulator for fresh values this frame
-        speed       = simulator.get_speed()
-        rpm         = simulator.get_rpm()
-        gps_data    = simulator.get_gps()
-        radar_data  = simulator.get_radar_alert()
+        # 2. UPDATE DATA
+        speed      = simulator.get_speed()
+        rpm        = simulator.get_rpm()
+        gps_data   = simulator.get_gps()
+        radar_data = simulator.get_radar_alert()
 
-        # 3. DRAW — paint everything onto the screen
+        # 3. DRAW
         draw_background()
-        draw_map_panel(gps_data)
+        draw_map_panel(screen, gps_data)
         draw_gauge_panel(speed, rpm)
         draw_radar_panel(radar_data)
 
-        # Flip = push everything we drew to the actual display
         pygame.display.flip()
-
-        # Hold to our target FPS (30)
         clock.tick(config.FPS)
+        frame_count += 1   # increment every frame for animations
 
 
 if __name__ == "__main__":
