@@ -61,7 +61,7 @@ def get_radar_alert() -> dict:
 # --- Quick test: run this file directly to see sample output ---
 if __name__ == "__main__":
     print("Testing simulator output...\n")
-    for i in range(5):
+    for i in range(100):
         print(f"Speed:  {get_speed()} mph")
         print(f"RPM:    {get_rpm()}")
         print(f"GPS:    {get_gps()}")
