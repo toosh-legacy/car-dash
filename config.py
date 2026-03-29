@@ -43,8 +43,8 @@ THEMES = {
         "divider":    ( 40, 160,  60),
         "bg_tint":    (  8,  25,  12),
     },
-    "care": {
-        "name":       "CARE",
+    "normal": {
+        "name":       "NORMAL",
         "accent":     (  0, 155, 225),   # steel blue
         "needle":     ( 35, 185, 255),
         "arc":        (  0, 145, 210),
