@@ -1,28 +1,39 @@
 # ui/modes.py
-# Three display modes.  Each draw_*_panel() renders the right-side gauge
-# area (above the radar strip).  All coordinates are absolute screen pixels.
+# Three display modes for the right-side instrument panel.
+#
+# Layout (right panel, 512 × 480 px):
+#
+#  ┌─────────────────────────────────┐  y = 0
+#  │  TAB BAR  (22 px)               │
+#  ├─────────────────────────────────┤  y = 22
+#  │                                 │
+#  │   MAIN GAUGE AREA  (300 px)     │  y = 22 … 322
+#  │                                 │
+#  ├─────────────────────────────────┤  y = 322
+#  │   MINI GAUGE ROW   ( 72 px)     │  y = 322 … 394
+#  │   coolant | oil | battery       │
+#  ├─────────────────────────────────┤  y = 394
+#  │   RADAR STRIP      ( 86 px)     │  y = 394 … 480
+#  └─────────────────────────────────┘
 
 import pygame
 import math
 import config
-from ui.gauges import (draw_analog_gauge, draw_bar_gauge,
-                        draw_digital_block, draw_led, _f, _polar, _angle_rad)
+from ui.gauges import (draw_analog_gauge, draw_mini_arc,
+                        draw_bar_gauge, draw_digital_block, _f,
+                        _polar, _angle_rad)
 
-# ── Panel geometry ────────────────────────────────────────────
-_PX   = config.MAP_PANEL_WIDTH        # 768  – left edge of right panel
-_PW   = config.GAUGE_PANEL_WIDTH      # 512  – width of right panel
-_SH   = config.SCREEN_HEIGHT          # 480
-_GAH  = config.GAUGE_AREA_HEIGHT      # 322  – height above radar
-_PCX  = _PX + _PW // 2               # 1024 – horizontal centre
-
-_TAB_H   = 22                          # mode tab bar height
-_RAD_Y   = _SH - config.RADAR_PANEL_HEIGHT   # 322 – top of radar strip
-_BODY_Y  = _TAB_H                      # usable body starts here
-_BODY_H  = _RAD_Y - _TAB_H            # 300 – usable height for gauges
+# ── Geometry constants ────────────────────────────────────────
+_PX  = config.MAP_PANEL_WIDTH        # 768  left edge of right panel
+_PW  = config.GAUGE_PANEL_WIDTH      # 512
+_PCX = _PX + _PW // 2               # 1024 horizontal centre
+_TAB = 22                            # tab bar height
+_MG  = config.MAIN_GAUGE_HEIGHT      # 322  bottom of main gauge area
+_GAH = config.GAUGE_AREA_HEIGHT      # 394  bottom of mini-gauge row
 
 
 # ══════════════════════════════════════════════════════════════
-#  MODE TABS
+#  SHARED: mode tab bar
 # ══════════════════════════════════════════════════════════════
 
 def draw_mode_tabs(screen, current_mode, frame_count):
@@ -32,85 +43,92 @@ def draw_mode_tabs(screen, current_mode, frame_count):
 
     for i, (key, label) in enumerate(modes):
         tx     = _PX + i * tab_w
-        theme  = config.THEMES[key]
         active = (key == current_mode)
+        theme  = config.DASH_THEME
 
         if active:
-            pulse  = (math.sin(frame_count * 0.07) + 1) / 2
-            r, g, b = theme["accent"]
-            bg = (int(r * (0.18 + 0.10 * pulse)),
-                  int(g * (0.18 + 0.10 * pulse)),
-                  int(b * (0.18 + 0.10 * pulse)))
-            pygame.draw.rect(screen, bg, (tx, 0, tab_w, _TAB_H))
-            pygame.draw.rect(screen, theme["accent"], (tx, 0, tab_w, _TAB_H), 1)
+            pulse = (math.sin(frame_count * 0.07) + 1) / 2
+            acc   = theme["accent"]
+            bg    = tuple(int(c * (0.15 + 0.10 * pulse)) for c in acc)
+            pygame.draw.rect(screen, bg, (tx, 0, tab_w, _TAB))
+            pygame.draw.rect(screen, acc, (tx, 0, tab_w, _TAB), 1)
             tc = theme["text"]
         else:
-            pygame.draw.rect(screen, (22, 22, 26), (tx, 0, tab_w, _TAB_H))
-            pygame.draw.rect(screen, (42, 42, 48), (tx, 0, tab_w, _TAB_H), 1)
-            tc = (72, 72, 80)
+            pygame.draw.rect(screen, (18, 17, 10), (tx, 0, tab_w, _TAB))
+            pygame.draw.rect(screen, (40, 38, 24), (tx, 0, tab_w, _TAB), 1)
+            tc = (70, 66, 44)
 
         s = f.render(label, True, tc)
         screen.blit(s, (tx + (tab_w - s.get_width()) // 2,
-                        _TAB_H // 2 - s.get_height() // 2))
+                        _TAB // 2 - s.get_height() // 2))
 
 
 # ══════════════════════════════════════════════════════════════
-#  SHARED HELPER: vertical pedal bar (F1-style)
+#  SHARED: mini gauge strip
+#  Shown in every mode — coolant / oil / battery.
+#  No numbers elsewhere in the UI repeat these values.
 # ══════════════════════════════════════════════════════════════
 
-def _draw_pedal_bar(screen, value, x, y, w, h, fill_color, label, frame_count=0):
-    """
-    Vertical bar that fills from the BOTTOM up — like F1 telemetry overlays.
-    Tick marks at 25 / 50 / 75 / 100 %.
-    """
-    f_lbl = _f(10)
-    f_val = _f(11, bold=True)
+def draw_mini_gauge_strip(screen, engine, theme):
+    y_strip = _MG          # 322
+    strip_h = _GAH - _MG  # 72
 
-    # Label at top
-    lbl_s = f_lbl.render(label, True, (130, 130, 140))
-    screen.blit(lbl_s, (x + (w - lbl_s.get_width()) // 2, y - 15))
+    # Strip background
+    bg = pygame.Surface((_PW, strip_h), pygame.SRCALPHA)
+    bg.fill((12, 11, 4, 215))
+    screen.blit(bg, (_PX, y_strip))
 
-    # Background track
-    pygame.draw.rect(screen, (28, 28, 32), (x, y, w, h), border_radius=3)
+    # Top separator line
+    pygame.draw.line(screen, (65, 60, 30),
+                     (_PX, y_strip), (_PX + _PW, y_strip), 1)
 
-    # Fill (bottom-up)
-    ratio  = max(0.0, min(1.0, value / 100.0))
-    fill_h = int(ratio * h)
-    if fill_h > 2:
-        # Gradient: darker at bottom, brighter near current level
-        r, g, b = fill_color
-        dark_col  = (max(0,r-60), max(0,g-60), max(0,b-60))
-        pygame.draw.rect(screen, dark_col,
-                         (x, y + h - fill_h, w, fill_h), border_radius=3)
-        # Bright top slice (the "active" level indicator)
-        slice_h = max(3, min(8, fill_h // 6))
-        pygame.draw.rect(screen, fill_color,
-                         (x, y + h - fill_h, w, slice_h), border_radius=3)
+    # Mini gauge radius and center y
+    r  = 24
+    cy = y_strip + 30    # 352
 
-    # Tick marks at 25/50/75/100
-    for pct in (25, 50, 75, 100):
-        ty = y + h - int(pct / 100.0 * h)
-        col = (80, 80, 88) if pct < int(value) else (48, 48, 55)
-        pygame.draw.line(screen, col, (x, ty), (x + w, ty), 1)
+    # Three horizontal positions
+    cx_l = _PX + 88      # 856
+    cx_c = _PCX          # 1024
+    cx_r = _PX + _PW - 88  # 1192
 
-    # Border
-    pygame.draw.rect(screen, (55, 55, 65), (x, y, w, h), 1, border_radius=3)
+    draw_mini_arc(screen,
+                  engine["coolant_temp"],
+                  config.MIN_COOLANT, config.MAX_COOLANT,
+                  cx_l, cy, r,
+                  "COOLANT", "°F", theme, redline=228)
 
-    # Current % value at bottom
-    pct_s = f_val.render(f"{int(value)}%", True, fill_color if value > 5 else (55,55,65))
-    screen.blit(pct_s, (x + (w - pct_s.get_width()) // 2, y + h + 3))
+    draw_mini_arc(screen,
+                  engine["oil_temp"],
+                  config.MIN_OIL, config.MAX_OIL,
+                  cx_c, cy, r,
+                  "OIL", "°F", theme, redline=248)
+
+    draw_mini_arc(screen,
+                  engine["battery_v"],
+                  config.MIN_BATT, config.MAX_BATT,
+                  cx_r, cy, r,
+                  "BATT", "V", theme)
+
+    # Thin vertical separators between gauges
+    for sep_cx in ((cx_l + cx_c) // 2, (cx_c + cx_r) // 2):
+        pygame.draw.line(screen, (38, 36, 20),
+                         (sep_cx, y_strip + 8), (sep_cx, y_strip + strip_h - 8), 1)
 
 
 # ══════════════════════════════════════════════════════════════
 #  RACE MODE
-#  Left edge: throttle bar (green, fills up)
-#  Right edge: brake bar   (red,   fills up)
-#  Centre: large tachometer  —  gear large in face, speed + boost insets
-#  G-force bubble indicator inside the lower face area
+#
+#  Left bar  — throttle (functional green, fills upward)
+#  Right bar — brake    (functional red,   fills upward)
+#  Centre    — large tachometer
+#              ├── Gear number (large, upper face)
+#              ├── Speed digital inset (lower face, left)
+#              └── Boost digital inset (lower face, right)
+#  G-force bubble inside lower face deadzone
 # ══════════════════════════════════════════════════════════════
 
-_BAR_W      = 20
-_BAR_MARGIN = 6
+_BAR_W = 20
+_BAR_M = 6   # bar margin from panel edge
 
 def draw_race_panel(screen, data, theme, frame_count):
     speed    = data["speed"]
@@ -121,24 +139,23 @@ def draw_race_panel(screen, data, theme, frame_count):
     boost    = data["boost"]
     g        = data["g_force"]
 
-    # ── Pedal bars ────────────────────────────────────────────
-    bar_y = _BODY_Y + 18
-    bar_h = _BODY_H - 36
+    bar_y = _TAB + 14
+    bar_h = _MG - bar_y - 8
 
-    # Throttle — left edge
-    throt_x = _PX + _BAR_MARGIN
-    _draw_pedal_bar(screen, throttle, throt_x, bar_y, _BAR_W, bar_h,
-                    (55, 200, 70), "T", frame_count)
+    # ── Throttle bar (left, functional green) ─────────────────
+    _draw_pedal_bar(screen, throttle,
+                    _PX + _BAR_M, bar_y, _BAR_W, bar_h,
+                    (42, 188, 58), "T", frame_count)
 
-    # Brake — right edge
-    brake_x = _PX + _PW - _BAR_MARGIN - _BAR_W
-    _draw_pedal_bar(screen, brake, brake_x, bar_y, _BAR_W, bar_h,
-                    (215, 45, 38), "B", frame_count)
+    # ── Brake bar (right, functional red) ─────────────────────
+    _draw_pedal_bar(screen, brake,
+                    _PX + _PW - _BAR_M - _BAR_W, bar_y, _BAR_W, bar_h,
+                    (205, 42, 35), "B", frame_count)
 
-    # ── Tachometer (centered between bars) ───────────────────
-    r  = 115
+    # ── Tachometer ────────────────────────────────────────────
+    r  = 125
     cx = _PCX
-    cy = _BODY_Y + _BODY_H // 2 + 8    # slight downward nudge
+    cy = _TAB + (_MG - _TAB) // 2 + 5   # vertically centred ≈ 172
 
     draw_analog_gauge(
         screen, rpm, 0, config.MAX_RPM,
@@ -151,60 +168,85 @@ def draw_race_panel(screen, data, theme, frame_count):
         show_center_text=False,
     )
 
-    # ── Content inside the tach face ─────────────────────────
+    # ── Gear — large, upper face ──────────────────────────────
+    f_glbl = _f(11)
+    f_gnum = _f(58, bold=True)
+    gl_s   = f_glbl.render("GEAR", True, theme["sub"])
+    gn_s   = f_gnum.render(str(gear),  True, theme["accent"])
+    screen.blit(gl_s, (cx - gl_s.get_width() // 2, cy - 72))
+    screen.blit(gn_s, (cx - gn_s.get_width() // 2, cy - 58))
 
-    # GEAR — very large, upper-centre of face
-    f_gear_label = _f(11)
-    f_gear_num   = _f(56, bold=True)
-
-    gl_s = f_gear_label.render("GEAR", True, theme["sub"])
-    gn_s = f_gear_num.render(str(gear),  True, theme["accent"])
-    screen.blit(gl_s, (cx - gl_s.get_width() // 2, cy - 68))
-    screen.blit(gn_s, (cx - gn_s.get_width() // 2, cy - 52))
-
-    # RPM digital (small, below gear)
-    f_rpm_d = _f(13)
-    rpm_s   = f_rpm_d.render(f"{int(rpm):,} RPM", True, theme["sub"])
-    screen.blit(rpm_s, (cx - rpm_s.get_width() // 2, cy + 14))
-
-    # ── Speed inset (lower-left of face) ─────────────────────
-    spd_w, spd_h = 82, 44
-    spd_x = cx - 46 - spd_w
-    spd_y = cy + 32
+    # ── Speed inset block (lower-left quadrant of face) ───────
+    sb_w, sb_h = 78, 42
+    sb_x = cx - 46 - sb_w
+    sb_y = cy + 30
     draw_digital_block(screen, "SPEED", str(int(speed)), "mph",
-                       spd_x, spd_y, spd_w, spd_h, theme)
+                       sb_x, sb_y, sb_w, sb_h, theme)
 
-    # ── Boost inset (lower-right of face) ────────────────────
-    bst_w, bst_h = 72, 44
-    bst_x = cx + 46
-    bst_y = cy + 32
+    # ── Boost inset block (lower-right quadrant of face) ──────
+    bb_w, bb_h = 68, 42
+    bb_x = cx + 46
+    bb_y = cy + 30
     draw_digital_block(screen, "BOOST", f"{boost:.1f}", "psi",
-                       bst_x, bst_y, bst_w, bst_h, theme)
+                       bb_x, bb_y, bb_w, bb_h, theme)
 
-    # ── G-force bubble ───────────────────────────────────────
-    _draw_g_ball(screen, g["lat"], g["lon"], cx, cy + 82, 24, theme)
+    # ── G-force bubble (bottom face deadzone) ─────────────────
+    _draw_g_ball(screen, g["lat"], g["lon"], cx, cy + 82, 22, theme)
+
+
+def _draw_pedal_bar(screen, value, x, y, w, h, fill_color, label, frame_count):
+    """Vertical bar filling upward — F1 telemetry style."""
+    f_lbl = _f(10)
+    f_pct = _f(10, bold=True)
+
+    # Label above
+    lbl_s = f_lbl.render(label, True, (95, 90, 65))
+    screen.blit(lbl_s, (x + (w - lbl_s.get_width()) // 2, y - 13))
+
+    # Background
+    pygame.draw.rect(screen, (24, 23, 15), (x, y, w, h), border_radius=3)
+
+    # Fill (bottom-up)
+    ratio  = max(0.0, min(1.0, value / 100.0))
+    fill_h = int(ratio * h)
+    if fill_h > 3:
+        dr, dg, db = fill_color
+        dark = (max(0, dr - 60), max(0, dg - 60), max(0, db - 60))
+        pygame.draw.rect(screen, dark,
+                         (x, y + h - fill_h, w, fill_h), border_radius=3)
+        # Bright leading edge
+        edge_h = max(3, min(7, fill_h // 6))
+        pygame.draw.rect(screen, fill_color,
+                         (x, y + h - fill_h, w, edge_h), border_radius=3)
+
+    # Tick lines at 25 / 50 / 75 %
+    for pct in (25, 50, 75):
+        ty  = y + h - int(pct / 100.0 * h)
+        col = (60, 56, 36) if pct <= int(value) else (36, 34, 20)
+        pygame.draw.line(screen, col, (x, ty), (x + w, ty), 1)
+
+    # Border
+    pygame.draw.rect(screen, (50, 46, 28), (x, y, w, h), 1, border_radius=3)
+
+    # % value below
+    pct_s = f_pct.render(f"{int(value)}%",
+                          True, fill_color if value > 5 else (45, 42, 25))
+    screen.blit(pct_s, (x + (w - pct_s.get_width()) // 2, y + h + 2))
 
 
 def _draw_g_ball(screen, lat_g, lon_g, cx, cy, r, theme):
-    """
-    Bullseye G-force indicator.
-    Positive lon_g (acceleration) → ball moves toward top.
-    Positive lat_g (right cornering) → ball moves right.
-    """
+    """Bullseye G-force indicator. Dot moves: lateral left/right, longitudinal up/down."""
     cx, cy = int(cx), int(cy)
 
-    # Background
-    pygame.draw.circle(screen, (22, 22, 26), (cx, cy), r)
-
+    pygame.draw.circle(screen, (18, 17, 10), (cx, cy), r)
     # Rings at 0.5G and 1.0G
-    for ring_r, col in ((r // 2, (50,50,60)), (r, (50,50,60))):
-        pygame.draw.circle(screen, col, (cx, cy), ring_r, 1)
-
+    pygame.draw.circle(screen, (42, 40, 26), (cx, cy), r // 2, 1)
+    pygame.draw.circle(screen, (42, 40, 26), (cx, cy), r,      1)
     # Cross-hairs
-    pygame.draw.line(screen, (48, 48, 58), (cx - r, cy), (cx + r, cy), 1)
-    pygame.draw.line(screen, (48, 48, 58), (cx, cy - r), (cx, cy + r), 1)
+    pygame.draw.line(screen, (40, 38, 24), (cx - r, cy), (cx + r, cy), 1)
+    pygame.draw.line(screen, (40, 38, 24), (cx, cy - r), (cx, cy + r), 1)
 
-    # Ball position (clamped inside circle)
+    # Ball (clamped to circle)
     max_g = 1.5
     bx = cx + int(lat_g / max_g * r * 0.88)
     by = cy - int(lon_g / max_g * r * 0.88)
@@ -214,29 +256,30 @@ def _draw_g_ball(screen, lat_g, lon_g, cx, cy, r, theme):
         bx = cx + int((bx - cx) * s)
         by = cy + int((by - cy) * s)
 
-    # Glow
-    glow = pygame.Surface((20, 20), pygame.SRCALPHA)
-    pr, pg, pb = theme["needle"]
-    pygame.draw.circle(glow, (pr, pg, pb, 80), (10, 10), 9)
-    screen.blit(glow, (bx - 10, by - 10))
+    # Glow halo
+    ar, ag, ab = theme["accent"]
+    glow = pygame.Surface((16, 16), pygame.SRCALPHA)
+    pygame.draw.circle(glow, (ar, ag, ab, 80), (8, 8), 7)
+    screen.blit(glow, (bx - 8, by - 8))
 
-    pygame.draw.circle(screen, theme["needle"], (bx, by), 4)
-    pygame.draw.circle(screen, (255, 255, 255), (bx, by), 2)
-
-    # Outer border
-    pygame.draw.circle(screen, (55, 55, 65), (cx, cy), r, 1)
+    pygame.draw.circle(screen, theme["accent"], (bx, by), 4)
+    pygame.draw.circle(screen, (240, 240, 244), (bx, by), 2)
 
     # "G" label
     f = _f(9)
-    s = f.render("G", True, (80, 80, 92))
+    s = f.render("G", True, (75, 70, 48))
     screen.blit(s, (cx - s.get_width() // 2, cy + r + 2))
 
 
 # ══════════════════════════════════════════════════════════════
 #  ECO MODE
-#  Centred speed gauge with an ECO ZONE arc painted on its face.
-#  Below: Tesla-style power/regen bar.
-#  Instant MPG large digital.  Eco score arc.  Range block.
+#
+#  Centre — speed gauge with translucent eco-zone arc overlay
+#            (25–65 mph sweet spot painted on the face)
+#  Below gauge:
+#    Power/regen bar  (amber=consumption | green=coasting)
+#    Instant MPG  |  Trip Avg MPG  |  Range
+#  No digital speed — the gauge IS the speed display.
 # ══════════════════════════════════════════════════════════════
 
 def draw_eco_panel(screen, data, theme, frame_count):
@@ -245,165 +288,13 @@ def draw_eco_panel(screen, data, theme, frame_count):
     brake    = data["brake"]
     econ     = data["economy"]
 
-    r  = 100
+    r  = 108
     cx = _PCX
-    cy = _BODY_Y + r + 22
-
-    # ── Speed gauge with eco-zone arc overlay ────────────────
-    draw_analog_gauge(
-        screen, speed, 0, config.MAX_SPEED,
-        cx, cy, r,
-        label="SPEED", unit="mph",
-        theme=theme,
-        major_step=20, minor_step=10,
-        show_center_text=True,
-    )
-
-    # Eco zone highlight arc (25–65 mph ideal range) drawn over the gauge
-    _draw_eco_zone_arc(screen, cx, cy, r - 5, 25, 65,
-                       config.MAX_SPEED, theme)
-
-    # ── Power / regen bar ─────────────────────────────────────
-    bar_x = _PX + 20
-    bar_w = _PW - 40
-    bar_h = 18
-    # Position below the gauge bezel
-    gauge_bot = cy + r + 26
-    pwr_y     = gauge_bot + 4
-
-    _draw_power_regen_bar(screen, throttle, brake, bar_x, pwr_y, bar_w, bar_h)
-
-    # ── Eco stat blocks (below power bar) ────────────────────
-    blk_y = pwr_y + bar_h + 20
-    blk_h = 44
-    blk_w = (_PW - 50) // 3
-    avail = _RAD_Y - blk_y - 8
-    if avail < blk_h:
-        blk_h = max(30, avail)
-
-    blocks = [
-        ("INSTANT",  f"{econ['mpg_instant']:.0f}",  "MPG"),
-        ("TRIP AVG", f"{econ['mpg_trip']:.1f}",       "MPG"),
-        ("RANGE",    f"{int(econ['range_mi'])}",      "mi"),
-    ]
-    for i, (lbl, val, unit) in enumerate(blocks):
-        bx = _PX + 20 + i * (blk_w + 5)
-        draw_digital_block(screen, lbl, val, unit, bx, blk_y, blk_w, blk_h, theme)
-
-    # ── Eco score arc gauge (small, lower-right area) ─────────
-    score_cx = _PX + _PW - 52
-    score_cy = blk_y + blk_h // 2
-    _draw_eco_score(screen, econ["eco_score"], score_cx, score_cy, 28, theme)
-
-
-def _draw_eco_zone_arc(screen, cx, cy, r, lo_mph, hi_mph, max_mph, theme):
-    """Translucent green arc painted over the speed gauge showing the eco band."""
-    a_lo = _angle_rad(lo_mph,  0, max_mph, 220, 260)
-    a_hi = _angle_rad(hi_mph,  0, max_mph, 220, 260)
-    rect = (cx - r, cy - r, r * 2, r * 2)
-
-    # Draw as a thick translucent arc using a surface
-    arc_surf = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
-    arc_r    = r - 3
-    ar       = (1, 1, arc_r * 2, arc_r * 2)
-    pygame.draw.arc(arc_surf, (*theme["accent"], 45), ar, a_hi, a_lo, 7)
-    screen.blit(arc_surf, (cx - r - 1, cy - r - 1))
-
-    # Thin bright border lines at the zone edges
-    for a, lbl in ((a_lo, f"{int(lo_mph)}"), (a_hi, f"{int(hi_mph)}")):
-        ox, oy = _polar(cx, cy, r + 2, a)
-        ix, iy = _polar(cx, cy, r - 10, a)
-        pygame.draw.line(screen, theme["accent"],
-                         (int(ox), int(oy)), (int(ix), int(iy)), 2)
-
-
-def _draw_power_regen_bar(screen, throttle, brake, x, y, w, h):
-    """
-    Horizontal centred bar.
-    Right half (orange→red)  = engine power demand (throttle).
-    Left  half (green)        = regen / engine braking (brake).
-    """
-    cx = x + w // 2
-
-    # Background
-    pygame.draw.rect(screen, (28, 28, 32), (x, y, w, h), border_radius=4)
-
-    # Right: power demand
-    pw = int((throttle / 100.0) * (w // 2))
-    if pw > 2:
-        intensity = throttle / 100.0
-        r_ch = int(180 + intensity * 75)
-        g_ch = int(120 - intensity * 100)
-        pygame.draw.rect(screen, (r_ch, max(0, g_ch), 10),
-                         (cx, y + 1, pw, h - 2), border_radius=4)
-
-    # Left: regen / braking
-    bw = int((brake / 100.0) * (w // 2))
-    if bw > 2:
-        pygame.draw.rect(screen, (35, 185, 65),
-                         (cx - bw, y + 1, bw, h - 2), border_radius=4)
-
-    # Centre line
-    pygame.draw.rect(screen, (180, 180, 190), (cx - 1, y - 2, 2, h + 4))
-
-    # Border
-    pygame.draw.rect(screen, (55, 55, 65), (x, y, w, h), 1, border_radius=4)
-
-    # Labels
-    f = _f(11)
-    s_r = f.render("REGEN", True, (50, 170, 60))
-    s_p = f.render("POWER", True, (190, 90, 20))
-    screen.blit(s_r, (x + 4, y + (h - s_r.get_height()) // 2))
-    screen.blit(s_p, (x + w - s_p.get_width() - 4, y + (h - s_p.get_height()) // 2))
-
-
-def _draw_eco_score(screen, score, cx, cy, r, theme):
-    """Small arc gauge showing eco score 0-100. Clockwise, full = perfect."""
-    cx, cy = int(cx), int(cy)
-
-    # Background circle
-    pygame.draw.circle(screen, (22, 22, 26), (cx, cy), r + 4)
-    pygame.draw.circle(screen, (40, 40, 46), (cx, cy), r + 4, 1)
-
-    # Arc track
-    rect = (cx - r, cy - r, r * 2, r * 2)
-    pygame.draw.arc(screen, (40, 40, 44), rect,
-                    math.radians(-40), math.radians(220), 5)
-
-    # Filled arc
-    a_val = _angle_rad(score, 0, 100, 220, 260)
-    if score > 0:
-        col = theme["arc"] if score >= 60 else theme["arc_warn"] if score >= 35 else theme["arc_danger"]
-        pygame.draw.arc(screen, col, rect, a_val, math.radians(220), 5)
-
-    # Score text
-    f_n = _f(14, bold=True)
-    f_l = _f(9)
-    ns  = f_n.render(str(int(score)), True, theme["text"])
-    ls  = f_l.render("ECO", True, theme["sub"])
-    screen.blit(ns, (cx - ns.get_width() // 2, cy - ns.get_height() // 2 - 1))
-    screen.blit(ls, (cx - ls.get_width() // 2, cy + 9))
-
-
-# ══════════════════════════════════════════════════════════════
-#  NORMAL MODE
-#  Focused on calm daily driving guidance.
-#  Speed gauge (centred).
-#  Drive-style meter: GENTLE ▶ SPIRITED horizontal bar with needle.
-#  Trip computer blocks.
-#  Engine health LEDs (colour-coded status, no raw numbers).
-# ══════════════════════════════════════════════════════════════
-
-def draw_normal_panel(screen, data, theme, frame_count):
-    speed        = data["speed"]
-    drive_style  = data["drive_style"]    # 0=gentle, 100=spirited
-    trip         = data["trip"]
-    engine       = data["engine"]
-    smooth       = trip["smooth_score"]
-
-    r  = 100
-    cx = _PCX
-    cy = _BODY_Y + r + 22
+    cy = _TAB + r + (r + 22)   # ensure bezel clears tab bar
+    # cy = 22 + 108 + 130 = ... let me compute properly:
+    # bezel top must be >= TAB (22). bezel top = cy - (r+22).
+    # cy - (r+22) >= 22  →  cy >= r+44 = 152
+    cy = r + 44  # = 152
 
     # ── Speed gauge ───────────────────────────────────────────
     draw_analog_gauge(
@@ -415,55 +306,173 @@ def draw_normal_panel(screen, data, theme, frame_count):
         show_center_text=True,
     )
 
+    # Eco zone arc overlay (25–65 mph)
+    _draw_eco_zone(screen, cx, cy, r - 4, 25, 65, config.MAX_SPEED, theme)
+
+    # ── Below gauge: power/regen bar ─────────────────────────
+    bezel_bot = cy + r + 22     # bottom of bezel
+    bar_x = _PX + 24
+    bar_w = _PW - 48
+    bar_h = 14
+
+    # Label row
+    f_bar_lbl = _f(11)
+    regen_s = f_bar_lbl.render("← REGEN", True, (42, 175, 58))
+    power_s = f_bar_lbl.render("POWER →", True, (195, 120, 18))
+    bar_lbl_y = bezel_bot + 6
+    screen.blit(regen_s, (bar_x, bar_lbl_y))
+    screen.blit(power_s, (bar_x + bar_w - power_s.get_width(), bar_lbl_y))
+
+    bar_y = bar_lbl_y + regen_s.get_height() + 3
+    _draw_power_regen_bar(screen, throttle, brake, bar_x, bar_y, bar_w, bar_h)
+
+    # ── Stat blocks: instant MPG | trip MPG | range ───────────
+    blk_y = bar_y + bar_h + 10
+    blk_h = min(40, _MG - blk_y - 4)
+    blk_w = (_PW - 50) // 3
+
+    for i, (lbl, val, unit) in enumerate([
+        ("INSTANT", f"{econ['mpg_instant']:.0f}", "MPG"),
+        ("TRIP AVG", f"{econ['mpg_trip']:.1f}",   "MPG"),
+        ("RANGE",   f"{int(econ['range_mi'])}",   "mi"),
+    ]):
+        bx = _PX + 22 + i * (blk_w + 3)
+        if blk_h >= 28:
+            draw_digital_block(screen, lbl, val, unit,
+                               bx, blk_y, blk_w, blk_h, theme)
+
+
+def _draw_eco_zone(screen, cx, cy, r, lo, hi, max_val, theme):
+    """Translucent amber arc marking the efficient speed band."""
+    a_lo = _angle_rad(lo, 0, max_val, 220, 260)
+    a_hi = _angle_rad(hi, 0, max_val, 220, 260)
+
+    surf = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
+    ar   = (1, 1, r * 2, r * 2)
+    acc  = theme["accent"]
+    pygame.draw.arc(surf, (*acc, 38), ar, a_hi, a_lo, 7)
+    screen.blit(surf, (cx - r - 1, cy - r - 1))
+
+    # Boundary tick marks at zone edges
+    for a in (a_lo, a_hi):
+        ox, oy = _polar(cx, cy, r + 2, a)
+        ix, iy = _polar(cx, cy, r - 10, a)
+        pygame.draw.line(screen, acc, (int(ox), int(oy)), (int(ix), int(iy)), 2)
+
+
+def _draw_power_regen_bar(screen, throttle, brake, x, y, w, h):
+    """Bidirectional bar: right = power demand (amber-red), left = regen (green)."""
+    mid = x + w // 2
+
+    pygame.draw.rect(screen, (24, 22, 12), (x, y, w, h), border_radius=4)
+
+    # Power (right half)
+    pw = int((throttle / 100.0) * (w // 2))
+    if pw > 2:
+        t  = throttle / 100.0
+        rc = int(175 + t * 65)
+        gc = int(110 - t * 100)
+        pygame.draw.rect(screen, (rc, max(0, gc), 5),
+                         (mid, y + 1, pw, h - 2), border_radius=4)
+
+    # Regen (left half)
+    bw = int((brake / 100.0) * (w // 2))
+    if bw > 2:
+        pygame.draw.rect(screen, (28, 168, 55),
+                         (mid - bw, y + 1, bw, h - 2), border_radius=4)
+
+    # Centre marker
+    pygame.draw.rect(screen, (165, 155, 100), (mid - 1, y - 2, 2, h + 4))
+    pygame.draw.rect(screen, (50, 46, 26), (x, y, w, h), 1, border_radius=4)
+
+
+# ══════════════════════════════════════════════════════════════
+#  NORMAL MODE
+#
+#  Centre — speed gauge  (same size as eco)
+#            └── smooth-score tiny arc inside lower deadzone
+#  Below gauge:
+#    Drive style meter  GENTLE ──── SPIRITED
+#    Trip blocks: distance | time | avg speed
+#  Engine health in mini gauge strip (shared — no LEDs needed here).
+# ══════════════════════════════════════════════════════════════
+
+def draw_normal_panel(screen, data, theme, frame_count):
+    speed       = data["speed"]
+    drive_style = data["drive_style"]
+    trip        = data["trip"]
+    smooth      = trip["smooth_score"]
+
+    r  = 108
+    cy = r + 44   # same as eco
+
+    cx = _PCX
+
+    # ── Speed gauge ───────────────────────────────────────────
+    draw_analog_gauge(
+        screen, speed, 0, config.MAX_SPEED,
+        cx, cy, r,
+        label="SPEED", unit="mph",
+        theme=theme,
+        major_step=20, minor_step=10,
+        show_center_text=True,
+    )
+
+    # Smooth-score arc inside lower deadzone of face
+    _draw_smooth_arc(screen, smooth, cx, cy + 32, 22, theme)
+
     # ── Drive style meter ─────────────────────────────────────
-    gauge_bot = cy + r + 26
-    ds_x  = _PX + 22
-    ds_w  = _PW - 44
-    ds_y  = gauge_bot + 4
-    ds_h  = 16
+    bezel_bot = cy + r + 22
+    ds_x = _PX + 24
+    ds_w = _PW - 48
+    ds_h = 14
+    ds_y = bezel_bot + 18    # leave room for label above
+
     _draw_style_meter(screen, drive_style, ds_x, ds_y, ds_w, ds_h, theme)
 
-    # ── Smooth score arc (small, inside face) ─────────────────
-    sm_cx = cx
-    sm_cy = cy + 30
-    _draw_smooth_arc(screen, smooth, sm_cx, sm_cy, 26, theme)
-
     # ── Trip computer blocks ───────────────────────────────────
-    blk_y = ds_y + ds_h + 22
-    blk_h = 40
-    avail = _RAD_Y - blk_y - 52   # leave room for LED row
-    if avail < blk_h:
-        blk_h = max(28, avail)
-
+    blk_y = ds_y + ds_h + 10
+    blk_h = min(40, _MG - blk_y - 4)
     blk_w = (_PW - 50) // 3
-    blocks = [
-        ("DISTANCE", f"{trip['distance']:.1f}", "mi"),
-        ("TRIP TIME", _fmt_time(trip["time_min"]),  ""),
-        ("AVG SPEED", f"{trip['avg_speed']:.0f}",  "mph"),
-    ]
-    for i, (lbl, val, unit) in enumerate(blocks):
-        bx = _PX + 22 + i * (blk_w + 4)
-        draw_digital_block(screen, lbl, val, unit, bx, blk_y, blk_w, blk_h, theme)
 
-    # ── Engine health LEDs ─────────────────────────────────────
-    led_y    = _RAD_Y - 30
-    led_items = _engine_health_leds(engine)
-    spacing  = (_PW - 20) // max(1, len(led_items))
-    for i, (lbl, status) in enumerate(led_items):
-        lx = _PX + 14 + i * spacing
-        draw_led(screen, lx, led_y, lbl, status, theme)
+    for i, (lbl, val, unit) in enumerate([
+        ("DISTANCE", f"{trip['distance']:.1f}", "mi"),
+        ("TIME",     _fmt_time(trip["time_min"]), ""),
+        ("AVG SPEED", f"{trip['avg_speed']:.0f}", "mph"),
+    ]):
+        bx = _PX + 22 + i * (blk_w + 3)
+        if blk_h >= 28:
+            draw_digital_block(screen, lbl, val, unit,
+                               bx, blk_y, blk_w, blk_h, theme)
+
+
+def _draw_smooth_arc(screen, score, cx, cy, r, theme):
+    """Tiny arc gauge showing smooth-driving score. Green = smooth, amber/red = rough."""
+    cx, cy = int(cx), int(cy)
+    rect   = (cx - r, cy - r, r * 2, r * 2)
+    pygame.draw.arc(screen, (30, 28, 18), rect,
+                    math.radians(-40), math.radians(220), 3)
+    a_val = _angle_rad(score, 0, 100, 220, 260)
+    if score > 0:
+        if   score >= 70: col = (42, 195, 62)
+        elif score >= 40: col = (200, 172, 28)
+        else:             col = (205, 45, 35)
+        pygame.draw.arc(screen, col, rect, a_val, math.radians(220), 3)
+    f = _f(9)
+    s = f.render(f"{int(score)}", True, theme["sub"])
+    screen.blit(s, (cx - s.get_width() // 2, cy - s.get_height() // 2))
 
 
 def _draw_style_meter(screen, score, x, y, w, h, theme):
     """
-    Horizontal zoned bar (GENTLE left → SPIRITED right).
-    A white needle marks the current driving style.
+    Colour-zoned horizontal bar. White needle marks current driving style.
+    Green = gentle / amber = normal / orange-red = spirited.
     """
-    # Zone colours painted left-to-right
+    # Zone fills
     zones = [
-        (0.00, 0.35, (28, 110, 40)),   # green  – gentle
-        (0.35, 0.65, (130, 85,  20)),  # amber  – normal
-        (0.65, 1.00, (150, 30,  22)),  # red    – spirited
+        (0.00, 0.33, (22, 95, 32)),
+        (0.33, 0.66, (118, 78, 16)),
+        (0.66, 1.00, (135, 28, 18)),
     ]
     for lo, hi, col in zones:
         zx = x + int(lo * w)
@@ -471,70 +480,27 @@ def _draw_style_meter(screen, score, x, y, w, h, theme):
         pygame.draw.rect(screen, col, (zx, y, zw, h))
 
     # Needle
-    nx = x + int(max(0, min(1, score / 100.0)) * w)
-    pygame.draw.rect(screen, (240, 240, 245), (nx - 1, y - 4, 2, h + 8))
+    nx = x + int(max(0.0, min(1.0, score / 100.0)) * w)
+    pygame.draw.rect(screen, (232, 232, 238), (nx - 1, y - 4, 2, h + 8))
 
     # Border
-    pygame.draw.rect(screen, (55, 55, 65), (x, y, w, h), 1, border_radius=2)
+    pygame.draw.rect(screen, (52, 48, 28), (x, y, w, h), 1)
 
-    # Labels
+    # Labels above
     f    = _f(11)
     f_st = _f(11, bold=True)
-    s_g  = f.render("GENTLE",   True, (60, 180, 60))
-    s_s  = f.render("SPIRITED", True, (200, 55, 45))
-    screen.blit(s_g, (x,                          y - 16))
-    screen.blit(s_s, (x + w - s_s.get_width(),    y - 16))
+    screen.blit(f.render("GENTLE",   True, (42, 175, 52)),
+                (x, y - 16))
+    screen.blit(f.render("SPIRITED", True, (195, 50, 40)),
+                (x + w - f.render("SPIRITED", True, (0,0,0)).get_width(), y - 16))
 
-    # Style label centred above needle
-    if score < 33:
-        style_lbl, style_col = "SMOOTH DRIVING",  (60, 200, 70)
-    elif score < 66:
-        style_lbl, style_col = "NORMAL DRIVING",  (200, 180, 40)
-    else:
-        style_lbl, style_col = "SPIRITED DRIVING",(215, 60, 45)
-    sl_s = f_st.render(style_lbl, True, style_col)
+    if   score < 33: style, sc = "SMOOTH DRIVING",   (42, 185, 52)
+    elif score < 66: style, sc = "NORMAL DRIVING",   (195, 172, 35)
+    else:            style, sc = "SPIRITED DRIVING",  (205, 50, 38)
+    sl_s = f_st.render(style, True, sc)
     screen.blit(sl_s, (x + w // 2 - sl_s.get_width() // 2, y - 16))
 
 
-def _draw_smooth_arc(screen, score, cx, cy, r, theme):
-    """
-    Tiny arc gauge showing smooth-driving score inside the speed gauge face.
-    This overlays the lower-center dead zone of the arc (where ticks don't reach).
-    """
-    cx, cy = int(cx), int(cy)
-    rect = (cx - r, cy - r, r * 2, r * 2)
-    pygame.draw.arc(screen, (35, 35, 40), rect,
-                    math.radians(-40), math.radians(220), 4)
-    a_val = _angle_rad(score, 0, 100, 220, 260)
-    if score > 0:
-        col = (50, 200, 70) if score >= 70 else (200, 180, 30) if score >= 40 else (210, 50, 40)
-        pygame.draw.arc(screen, col, rect, a_val, math.radians(220), 4)
-    f = _f(9)
-    s = f.render(f"{int(score)}", True, theme["sub"])
-    screen.blit(s, (cx - s.get_width() // 2, cy - s.get_height() // 2))
-
-
-def _engine_health_leds(engine):
-    """Return list of (label, status) pairs based on engine stats."""
-    items = []
-
-    # Coolant
-    ct = engine["coolant_temp"]
-    items.append(("COOLANT", "ok" if ct < 215 else "warn" if ct < 240 else "alert"))
-
-    # Oil
-    ot = engine["oil_temp"]
-    items.append(("OIL", "ok" if ot < 230 else "warn" if ot < 255 else "alert"))
-
-    # Battery
-    bv = engine["battery_v"]
-    items.append(("BATTERY", "ok" if bv >= 13.5 else "warn" if bv >= 12.0 else "alert"))
-
-    return items
-
-
 def _fmt_time(mins):
-    m = int(mins)
-    h = m // 60
-    m = m % 60
+    m = int(mins);  h = m // 60;  m = m % 60
     return f"{h}:{m:02d}" if h > 0 else f"{m}m"
