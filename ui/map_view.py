@@ -1,173 +1,129 @@
 # ui/map_view.py
-# Fetches and draws OpenStreetMap tiles centered on current GPS position.
+# GPS map panel — left 60% of the screen.
+# Downloads and caches OpenStreetMap tiles, draws position marker.
 
 import pygame
 import math
 import io
 import requests
 import config
+from ui.gauges import _f
 
-# --- Tile cache ---
-# Stores downloaded tiles so we don't re-fetch the same one every frame
-# Key = (zoom, tile_x, tile_y), Value = pygame Surface
 _tile_cache = {}
+TILE_SIZE   = 256
+ZOOM_LEVEL  = 15
 
-TILE_SIZE  = 256   # OSM tiles are always 256x256 pixels
-ZOOM_LEVEL = 15    # Good detail for car navigation
-
-HEADERS = {
-    # OpenStreetMap requires a User-Agent header
-    "User-Agent": "SportsDashSimulator/1.0"
-}
+HEADERS = {"User-Agent": "CarDash/2.0"}
 
 
 def _lat_lon_to_tile(lat, lon, zoom):
-    """Convert GPS coordinates to OSM tile x/y numbers."""
     n = 2 ** zoom
-    tile_x = int((lon + 180.0) / 360.0 * n)
-    tile_y = int(
+    tx = int((lon + 180.0) / 360.0 * n)
+    ty = int(
         (1.0 - math.log(math.tan(math.radians(lat)) +
-        1.0 / math.cos(math.radians(lat))) / math.pi) / 2.0 * n
+         1.0 / math.cos(math.radians(lat))) / math.pi) / 2.0 * n
     )
-    return tile_x, tile_y
+    return tx, ty
 
 
-def _lat_lon_to_pixel_offset(lat, lon, zoom, center_tile_x, center_tile_y):
-    """
-    Returns how many pixels offset the GPS point is from the
-    top-left corner of the center tile.
-    Used to keep your position dot centered on screen.
-    """
-    n = 2 ** zoom
-    # Fractional tile position
-    frac_x = (lon + 180.0) / 360.0 * n
-    frac_y = (1.0 - math.log(math.tan(math.radians(lat)) +
-              1.0 / math.cos(math.radians(lat))) / math.pi) / 2.0 * n
-
-    # Pixel offset from center tile origin
-    px = (frac_x - center_tile_x) * TILE_SIZE
-    py = (frac_y - center_tile_y) * TILE_SIZE
-    return int(px), int(py)
+def _lat_lon_to_pixel_offset(lat, lon, zoom, ctx, cty):
+    n  = 2 ** zoom
+    fx = (lon + 180.0) / 360.0 * n
+    fy = (1.0 - math.log(math.tan(math.radians(lat)) +
+           1.0 / math.cos(math.radians(lat))) / math.pi) / 2.0 * n
+    return int((fx - ctx) * TILE_SIZE), int((fy - cty) * TILE_SIZE)
 
 
-def _fetch_tile(zoom, tile_x, tile_y):
-    """
-    Downloads a single map tile from OpenStreetMap.
-    Returns a pygame Surface, or None if it fails.
-    Caches results so each tile is only downloaded once.
-    """
-    key = (zoom, tile_x, tile_y)
-
-    # Return cached tile if we already have it
+def _fetch_tile(zoom, tx, ty):
+    key = (zoom, tx, ty)
     if key in _tile_cache:
         return _tile_cache[key]
-
-    url = f"https://tile.openstreetmap.org/{zoom}/{tile_x}/{tile_y}.png"
-
+    url = f"https://tile.openstreetmap.org/{zoom}/{tx}/{ty}.png"
     try:
-        response = requests.get(url, headers=HEADERS, timeout=3)
-        if response.status_code == 200:
-            # Convert raw image bytes → PIL image → pygame Surface
-            image_bytes = io.BytesIO(response.content)
-            pygame_surface = pygame.image.load(image_bytes)
-            pygame_surface = pygame_surface.convert()  # optimize for blitting
-            _tile_cache[key] = pygame_surface
-            return pygame_surface
+        r = requests.get(url, headers=HEADERS, timeout=3)
+        if r.status_code == 200:
+            surf = pygame.image.load(io.BytesIO(r.content)).convert()
+            _tile_cache[key] = surf
+            return surf
     except Exception:
-        pass  # If fetch fails, return None — we'll draw a placeholder
-
+        pass
     return None
 
 
-def draw_map_panel(screen, gps_data):
-    """
-    Draws the GPS map panel on the left side of the screen.
+def draw_map_panel(screen, gps_data, mode, theme):
+    lat, lon   = gps_data["lat"], gps_data["lon"]
+    pw, ph     = config.MAP_PANEL_WIDTH, config.SCREEN_HEIGHT
 
-    Parameters:
-        screen   — pygame display surface
-        gps_data — dict with 'lat' and 'lon' keys from simulator
-    """
+    ctx, cty   = _lat_lon_to_tile(lat, lon, ZOOM_LEVEL)
+    tiles_x    = math.ceil(pw / TILE_SIZE) + 2
+    tiles_y    = math.ceil(ph / TILE_SIZE) + 2
+    hx, hy     = tiles_x // 2, tiles_y // 2
+    opx, opy   = _lat_lon_to_pixel_offset(lat, lon, ZOOM_LEVEL, ctx, cty)
 
-    lat = gps_data["lat"]
-    lon = gps_data["lon"]
+    gps_sx, gps_sy = pw // 2, ph // 2
 
-    panel_w = config.MAP_PANEL_WIDTH
-    panel_h = config.SCREEN_HEIGHT
+    # ── Draw tiles ───────────────────────────────────────────
+    for dx in range(-hx, hx + 1):
+        for dy in range(-hy, hy + 1):
+            tx   = ctx + dx
+            ty   = cty + dy
+            sx   = gps_sx + dx * TILE_SIZE - opx
+            sy   = gps_sy + dy * TILE_SIZE - opy
 
-    # Get the center tile for our GPS position
-    center_tx, center_ty = _lat_lon_to_tile(lat, lon, ZOOM_LEVEL)
-
-    # How many tiles do we need to fill the panel?
-    # Panel is 768px wide, tiles are 256px — so we need a 3x3 grid minimum
-    tiles_x = math.ceil(panel_w / TILE_SIZE) + 2   # +2 for overlap on edges
-    tiles_y = math.ceil(panel_h / TILE_SIZE) + 2
-
-    half_x = tiles_x // 2
-    half_y = tiles_y // 2
-
-    # Pixel offset of GPS point within center tile
-    offset_px, offset_py = _lat_lon_to_pixel_offset(
-        lat, lon, ZOOM_LEVEL, center_tx, center_ty
-    )
-
-    # Where on screen should the GPS position appear?
-    # We want it centered in the panel
-    gps_screen_x = panel_w // 2
-    gps_screen_y = panel_h // 2
-
-    # Draw each tile in the grid
-    for dx in range(-half_x, half_x + 1):
-        for dy in range(-half_y, half_y + 1):
-            tile_x = center_tx + dx
-            tile_y = center_ty + dy
-
-            # Where on screen does this tile go?
-            screen_x = gps_screen_x + dx * TILE_SIZE - offset_px
-            screen_y = gps_screen_y + dy * TILE_SIZE - offset_py
-
-            # Skip tiles completely outside the panel
-            if screen_x > panel_w or screen_y > panel_h:
-                continue
-            if screen_x + TILE_SIZE < 0 or screen_y + TILE_SIZE < 0:
+            if sx > pw or sy > ph or sx + TILE_SIZE < 0 or sy + TILE_SIZE < 0:
                 continue
 
-            tile_surface = _fetch_tile(ZOOM_LEVEL, tile_x, tile_y)
-
-            if tile_surface:
-                screen.blit(tile_surface, (screen_x, screen_y))
+            tile = _fetch_tile(ZOOM_LEVEL, tx, ty)
+            if tile:
+                screen.blit(tile, (sx, sy))
             else:
-                # Placeholder if tile failed to load
-                pygame.draw.rect(
-                    screen,
-                    (40, 40, 40),
-                    (screen_x, screen_y, TILE_SIZE, TILE_SIZE)
-                )
+                pygame.draw.rect(screen, (38, 38, 42),
+                                 (sx, sy, TILE_SIZE, TILE_SIZE))
 
-    # --- Clip to panel boundary ---
-    # Draw a black rectangle outside the panel to hide any tile overflow
-    pygame.draw.rect(screen, config.DARK_GRAY, (panel_w, 0, config.SCREEN_WIDTH, panel_h))
+    # ── Dark overlay (night-mode tint) ───────────────────────
+    overlay = pygame.Surface((pw, ph), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 68))    # ~27% dark tint
+    screen.blit(overlay, (0, 0))
 
-    # --- GPS position dot ---
-    # Outer ring
-    pygame.draw.circle(screen, config.ACCENT, (gps_screen_x, gps_screen_y), 12)
-    # Inner dot
-    pygame.draw.circle(screen, config.WHITE, (gps_screen_x, gps_screen_y), 6)
+    # ── Clip right edge ──────────────────────────────────────
+    pygame.draw.rect(screen, config.DARK_GRAY,
+                     (pw, 0, config.SCREEN_WIDTH - pw, ph))
 
-    # --- Crosshair lines ---
-    pygame.draw.line(screen, config.ACCENT,
-                     (gps_screen_x - 20, gps_screen_y),
-                     (gps_screen_x + 20, gps_screen_y), 1)
-    pygame.draw.line(screen, config.ACCENT,
-                     (gps_screen_x, gps_screen_y - 20),
-                     (gps_screen_x, gps_screen_y + 20), 1)
+    # ── GPS position marker ───────────────────────────────────
+    accent = theme["accent"]
+    # Outer glow ring
+    for off, alpha in ((18, 35), (14, 60), (10, 100)):
+        ring = pygame.Surface((off * 2, off * 2), pygame.SRCALPHA)
+        pygame.draw.circle(ring, (*accent, alpha), (off, off), off)
+        screen.blit(ring, (gps_sx - off, gps_sy - off))
+    # Solid ring + centre dot
+    pygame.draw.circle(screen, accent,         (gps_sx, gps_sy), 9)
+    pygame.draw.circle(screen, config.DARK_GRAY, (gps_sx, gps_sy), 5)
+    pygame.draw.circle(screen, (255, 255, 255), (gps_sx, gps_sy), 3)
 
-    # --- Coordinate overlay ---
-    font_small = pygame.font.SysFont("consolas", 14)
-    coord_text = font_small.render(f"  {lat:.5f}, {lon:.5f}", True, config.WHITE)
+    # ── Crosshair ────────────────────────────────────────────
+    cr_len, cr_gap = 22, 10
+    col_cr = (*accent, 160)
+    for dx_cr, dy_cr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        start = (gps_sx + dx_cr * cr_gap, gps_sy + dy_cr * cr_gap)
+        end   = (gps_sx + dx_cr * (cr_gap + cr_len),
+                 gps_sy + dy_cr * (cr_gap + cr_len))
+        pygame.draw.line(screen, accent, start, end, 1)
 
-    # Draw a semi-dark background behind the text for readability
-    bg = pygame.Surface((coord_text.get_width() + 10, 22))
-    bg.set_alpha(180)
-    bg.fill((0, 0, 0))
-    screen.blit(bg,        (8, panel_h - 28))
-    screen.blit(coord_text,(8, panel_h - 26))
+    # ── Mode badge (top-left of map) ─────────────────────────
+    badge_w, badge_h = 90, 26
+    badge_surf = pygame.Surface((badge_w, badge_h), pygame.SRCALPHA)
+    badge_surf.fill((*theme["bg_tint"], 200))
+    pygame.draw.rect(badge_surf, accent, (0, 0, badge_w, badge_h), 1, border_radius=4)
+    f_badge = _f(13, bold=True)
+    b_text  = f_badge.render(f"  {theme['name']} MODE", True, accent)
+    badge_surf.blit(b_text, (4, (badge_h - b_text.get_height()) // 2))
+    screen.blit(badge_surf, (8, 8))
+
+    # ── Coordinate overlay (bottom-left) ─────────────────────
+    f_coord = _f(13)
+    coord_s = f_coord.render(f"  {lat:.5f}, {lon:.5f}", True, (210, 210, 210))
+    bg      = pygame.Surface((coord_s.get_width() + 12, 22), pygame.SRCALPHA)
+    bg.fill((0, 0, 0, 170))
+    screen.blit(bg,      (6, ph - 28))
+    screen.blit(coord_s, (6, ph - 26))

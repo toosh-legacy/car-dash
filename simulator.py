@@ -1,71 +1,104 @@
 # simulator.py
-# Pretends to be your car's sensors.
-# Every function here will later be replaced by a real hardware call
-# — but the UI will never know the difference.
+# Simulated car sensors. Every function here will later be replaced
+# by real hardware calls — the UI will never know the difference.
 
 import random
-import time
 import math
+import time
 
-# We use this to make speed/RPM feel smooth rather than jumping randomly
-_current_speed = 60.0
-_current_rpm   = 3000.0
+_speed   = 60.0
+_rpm     = 3000.0
+_coolant = 195.0
+_oil     = 210.0
+_battery = 14.1
+_throttle = 35.0
+_mpg_instant = 28.0
+_eco_score   = 72.0
+_boost       = 0.0
+
+# ── Core sensors ───────────────────────────────────────────────
 
 def get_speed() -> float:
-    """Returns simulated speed in mph. Drifts up and down smoothly."""
-    global _current_speed
-    # Nudge speed slightly each call — feels like real driving
-    _current_speed += random.uniform(-2.0, 2.0)
-    # Clamp between 0 and 160 so it never goes out of range
-    _current_speed = max(0.0, min(160.0, _current_speed))
-    return round(_current_speed, 1)
+    global _speed
+    _speed += random.uniform(-2.5, 2.5)
+    _speed = max(0.0, min(160.0, _speed))
+    return round(_speed, 1)
 
 def get_rpm() -> float:
-    """Returns simulated RPM. Loosely tied to speed."""
-    global _current_rpm
-    _current_rpm += random.uniform(-150, 150)
-    _current_rpm = max(800.0, min(8000.0, _current_rpm))
-    return round(_current_rpm, 0)
+    global _rpm
+    _rpm += random.uniform(-180, 180)
+    _rpm = max(700.0, min(8000.0, _rpm))
+    return round(_rpm, 0)
+
+def get_gear() -> int:
+    """Derive gear from speed (approximate 6-speed gearbox)."""
+    breakpoints = [0, 20, 42, 65, 92, 118]
+    for gear, bp in reversed(list(enumerate(breakpoints, 1))):
+        if _speed >= bp:
+            return gear
+    return 1
 
 def get_gps() -> dict:
-    """Returns a fake GPS coordinate near Houston, TX.
-    Drifts slightly to simulate movement."""
     return {
-        "lat": 29.7604 + random.uniform(-0.001, 0.001),
-        "lon": -95.3698 + random.uniform(-0.001, 0.001),
-        "speed_gps": get_speed()   # GPS also tracks speed independently
+        "lat": 29.7604 + random.uniform(-0.0008, 0.0008),
+        "lon": -95.3698 + random.uniform(-0.0008, 0.0008),
     }
+
+# ── Engine stats ───────────────────────────────────────────────
 
 def get_engine_stats() -> dict:
-    """Returns simulated engine stats we'll use later."""
+    global _coolant, _oil, _battery, _throttle, _boost
+    _coolant  += random.uniform(-0.4, 0.4);  _coolant  = max(140, min(260, _coolant))
+    _oil      += random.uniform(-0.4, 0.4);  _oil      = max(160, min(280, _oil))
+    _battery  += random.uniform(-0.02, 0.02);_battery  = max(11.5, min(15.0, _battery))
+    _throttle += random.uniform(-3.0, 3.0);  _throttle = max(0.0, min(100.0, _throttle))
+    _boost    += random.uniform(-0.8, 0.8);  _boost    = max(0.0, min(18.0, _boost))
     return {
-        "coolant_temp": round(random.uniform(185.0, 210.0), 1),  # Fahrenheit
-        "oil_temp":     round(random.uniform(200.0, 230.0), 1),
-        "battery_v":    round(random.uniform(13.8, 14.4), 2),    # Volts
-        "throttle":     round(random.uniform(0.0, 100.0), 1)     # Percent
+        "coolant_temp": round(_coolant,  1),
+        "oil_temp":     round(_oil,      1),
+        "battery_v":    round(_battery,  2),
+        "throttle":     round(_throttle, 1),
+        "boost_psi":    round(_boost,    1),
     }
 
-def get_radar_alert() -> dict:
-    """Simulates a radar speed gun detection event.
-    90% of the time there's nothing. 10% chance of a hit."""
-    roll = random.random()  # random float between 0.0 and 1.0
+# ── Economy ────────────────────────────────────────────────────
 
-    if roll > 0.90:
-        band = random.choice(["X-BAND", "K-BAND", "Ka-BAND"])
-        strength = random.randint(1, 5)  # signal strength bars (1–5)
-        return {"alert": True, "band": band, "strength": strength}
-    
+def get_fuel_economy() -> dict:
+    global _mpg_instant, _eco_score
+    _mpg_instant += random.uniform(-1.5, 1.5)
+    _mpg_instant  = max(8.0, min(55.0, _mpg_instant))
+    _eco_score   += random.uniform(-1.0, 1.0)
+    _eco_score    = max(0.0, min(100.0, _eco_score))
+    return {
+        "mpg_instant": round(_mpg_instant, 1),
+        "mpg_trip":    round(28.5 + random.uniform(-0.2, 0.2), 1),
+        "eco_score":   round(_eco_score, 0),
+        "range_mi":    round((_eco_score / 100) * 320 + random.uniform(-2, 2), 0),
+    }
+
+# ── Tire pressures ─────────────────────────────────────────────
+
+def get_tire_pressures() -> dict:
+    return {
+        "fl": round(random.uniform(31.5, 33.5), 1),
+        "fr": round(random.uniform(31.5, 33.5), 1),
+        "rl": round(random.uniform(30.5, 32.5), 1),
+        "rr": round(random.uniform(30.5, 32.5), 1),
+    }
+
+# ── Radar ──────────────────────────────────────────────────────
+
+def get_radar_alert() -> dict:
+    if random.random() > 0.90:
+        return {
+            "alert":    True,
+            "band":     random.choice(["X-BAND", "K-BAND", "Ka-BAND"]),
+            "strength": random.randint(1, 5),
+        }
     return {"alert": False, "band": None, "strength": 0}
 
 
-# --- Quick test: run this file directly to see sample output ---
 if __name__ == "__main__":
-    print("Testing simulator output...\n")
-    for i in range(100):
-        print(f"Speed:  {get_speed()} mph")
-        print(f"RPM:    {get_rpm()}")
-        print(f"GPS:    {get_gps()}")
-        print(f"Engine: {get_engine_stats()}")
-        print(f"Radar:  {get_radar_alert()}")
-        print("-" * 40)
-        time.sleep(0.5)
+    for _ in range(5):
+        print(get_speed(), get_rpm(), get_gear(), get_engine_stats())
+        time.sleep(0.3)

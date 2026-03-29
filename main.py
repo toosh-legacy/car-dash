@@ -1,150 +1,160 @@
 # main.py
-# Entry point for the sports dashboard.
-# Opens the window and runs the main loop.
+# Entry point. Runs the main loop and delegates rendering to mode modules.
+#
+# Controls:
+#   1  →  RACE mode     (tachometer, boost, gear)
+#   2  →  ECO  mode     (speed, MPG, eco score)
+#   3  →  CARE mode     (temps, battery, tyre pressures)
+#   ESC / Q  →  quit
 
 import pygame
 import sys
+import math
 
-# Import our own files
 import config
 import simulator
-from ui.gauges import draw_arc_gauge, draw_bar_gauge
+from ui.map_view   import draw_map_panel
 from ui.radar_alert import draw_radar_panel
-from ui.map_view import draw_map_panel
+from ui.modes       import draw_mode_tabs, draw_race_panel, draw_eco_panel, draw_care_panel
 
-# --- Setup ---
-pygame.init()  # Always call this first — starts up all pygame systems
-
+# ── Init ──────────────────────────────────────────────────────
+pygame.init()
 screen = pygame.display.set_mode((config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
-pygame.display.set_caption("Sports Dash")
+pygame.display.set_caption("Car Dash")
+clock  = pygame.time.Clock()
 
-clock = pygame.time.Clock()  # Used to control FPS
+# ── Smooth interpolation state ────────────────────────────────
+# Instead of jumping to the raw simulator value each frame,
+# we lerp toward it — this gives needle glide like a real gauge.
 
-# --- Fonts ---
-# pygame.font.SysFont("name", size) loads a font from your system
-font_large  = pygame.font.SysFont("consolas", 48, bold=True)
-font_medium = pygame.font.SysFont("consolas", 28)
-font_small  = pygame.font.SysFont("consolas", 18)
+_sm = {
+    "speed":    60.0,
+    "rpm":      3000.0,
+    "coolant":  195.0,
+    "oil":      210.0,
+    "battery":  14.1,
+    "throttle": 35.0,
+    "boost":    0.0,
+    "mpg_inst": 28.0,
+    "eco":      72.0,
+}
+
+def _lerp(key, target, rate=0.07):
+    _sm[key] += (target - _sm[key]) * rate
+    return _sm[key]
 
 
-# ─────────────────────────────────────────
-# DRAW FUNCTIONS
-# Each function is responsible for ONE panel
-# ─────────────────────────────────────────
+# ── Background ────────────────────────────────────────────────
 
-def draw_background():
-    """Fill the whole screen dark, then draw panel dividers."""
+def draw_background(theme):
     screen.fill(config.DARK_GRAY)
 
-    # Draw a vertical dividing line between map and gauge panels
-    pygame.draw.line(
-        screen,
-        config.ACCENT,
-        (config.MAP_PANEL_WIDTH, 0),            # top point
-        (config.MAP_PANEL_WIDTH, config.SCREEN_HEIGHT),  # bottom point
-        2  # line thickness in pixels
-    )
+    # Right panel tint (very subtle)
+    tint_surf = pygame.Surface((config.GAUGE_PANEL_WIDTH, config.SCREEN_HEIGHT),
+                               pygame.SRCALPHA)
+    tint_surf.fill((*theme["bg_tint"], 90))
+    screen.blit(tint_surf, (config.MAP_PANEL_WIDTH, 0))
 
-    # Draw a horizontal line dividing gauges from radar (right panel only)
-    radar_top = config.SCREEN_HEIGHT - config.RADAR_PANEL_HEIGHT
-    pygame.draw.line(
-        screen,
-        config.ACCENT,
-        (config.MAP_PANEL_WIDTH, radar_top),
-        (config.SCREEN_WIDTH, radar_top),
-        2
-    )
+    # Vertical divider
+    div_x = config.MAP_PANEL_WIDTH
+    for off, col in ((2, (30, 30, 34)), (0, theme["divider"])):
+        pygame.draw.line(screen, col,
+                         (div_x + off, 0),
+                         (div_x + off, config.SCREEN_HEIGHT), 1)
 
-
-def draw_gauge_panel(speed, rpm):
-    gauge_center_x = config.MAP_PANEL_WIDTH + (config.GAUGE_PANEL_WIDTH // 2)
-    x_offset = config.MAP_PANEL_WIDTH + 20
-
-    # Radar panel starts here — we must stay above this line
-    radar_top = config.SCREEN_HEIGHT - config.RADAR_PANEL_HEIGHT  # = 312px
-
-    # Arc speedometer — reduced radius so it fits cleanly
-    draw_arc_gauge(
-        screen,
-        value     = speed,
-        max_value = config.MAX_SPEED,
-        x         = gauge_center_x,
-        y         = 130,          # moved up slightly
-        radius    = 100,          # reduced from 120 → 100
-        label     = "SPEED",
-        unit      = "mph",
-        color     = config.GREEN
-    )
-
-    # RPM bar — positioned well above the radar divider line
-    # radar_top - 70 gives us comfortable padding above the line
-    bar_y = radar_top - 70
-    draw_bar_gauge(
-        screen,
-        value     = rpm,
-        max_value = config.MAX_RPM,
-        x         = x_offset,
-        y         = bar_y,
-        width     = config.GAUGE_PANEL_WIDTH - 40,
-        height    = 22,
-        label     = "RPM",
-        color     = config.ACCENT
-    )
-def draw_radar_panel(radar_data):
-    """Bottom-right panel — Radar alert display."""
-    x_offset = config.MAP_PANEL_WIDTH + 20
-    y_offset = config.SCREEN_HEIGHT - config.RADAR_PANEL_HEIGHT + 10
-
-    label = font_small.render("RADAR DETECTOR", True, config.ACCENT)
-    screen.blit(label, (x_offset, y_offset))
-
-    if radar_data["alert"]:
-        # Show a red warning with band type
-        alert_text = font_large.render(f"⚠ {radar_data['band']}", True, config.RED)
-        bars_text   = font_medium.render(
-            f"Signal: {'█' * radar_data['strength']}{'░' * (5 - radar_data['strength'])}",
-            True, config.RED
-        )
-        screen.blit(alert_text, (x_offset, y_offset + 30))
-        screen.blit(bars_text,  (x_offset, y_offset + 85))
-    else:
-        clear_text = font_medium.render("ALL CLEAR", True, config.GREEN)
-        screen.blit(clear_text, (x_offset, y_offset + 40))
+    # Horizontal divider (gauge area / radar)
+    radar_y = config.SCREEN_HEIGHT - config.RADAR_PANEL_HEIGHT
+    for off, col in ((1, (30, 30, 34)), (0, theme["divider"])):
+        pygame.draw.line(screen, col,
+                         (config.MAP_PANEL_WIDTH, radar_y + off),
+                         (config.SCREEN_WIDTH,    radar_y + off), 1)
 
 
-# ─────────────────────────────────────────
-# MAIN LOOP
-# ─────────────────────────────────────────
+# ── Main loop ─────────────────────────────────────────────────
 
 def main():
-    frame_count = 0
+    current_mode = "race"
+    frame_count  = 0
 
     while True:
-        # 1. HANDLE EVENTS
+        # 1. Events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                pygame.quit(); sys.exit()
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    pygame.quit()
-                    sys.exit()
+                if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                    pygame.quit(); sys.exit()
+                if event.key == pygame.K_1:
+                    current_mode = "race"
+                if event.key == pygame.K_2:
+                    current_mode = "eco"
+                if event.key == pygame.K_3:
+                    current_mode = "care"
 
-        # 2. UPDATE DATA
-        speed      = simulator.get_speed()
-        rpm        = simulator.get_rpm()
-        gps_data   = simulator.get_gps()
-        radar_data = simulator.get_radar_alert()
+        theme = config.THEMES[current_mode]
 
-        # 3. DRAW
-        draw_background()
-        draw_map_panel(screen, gps_data)
-        draw_gauge_panel(speed, rpm)
-        draw_radar_panel(radar_data)
+        # 2. Collect raw sensor data
+        raw_speed   = simulator.get_speed()
+        raw_rpm     = simulator.get_rpm()
+        raw_engine  = simulator.get_engine_stats()
+        raw_economy = simulator.get_fuel_economy()
+        gps_data    = simulator.get_gps()
+        radar_data  = simulator.get_radar_alert()
+        tyre_data   = simulator.get_tire_pressures()
+        gear        = simulator.get_gear()
+
+        # 3. Smooth values
+        speed    = _lerp("speed",    raw_speed,              rate=0.08)
+        rpm      = _lerp("rpm",      raw_rpm,                rate=0.07)
+        coolant  = _lerp("coolant",  raw_engine["coolant_temp"], rate=0.04)
+        oil      = _lerp("oil",      raw_engine["oil_temp"],    rate=0.04)
+        battery  = _lerp("battery",  raw_engine["battery_v"],   rate=0.05)
+        throttle = _lerp("throttle", raw_engine["throttle"],    rate=0.10)
+        boost    = _lerp("boost",    raw_engine["boost_psi"],   rate=0.09)
+        mpg_inst = _lerp("mpg_inst", raw_economy["mpg_instant"],rate=0.06)
+        eco_sc   = _lerp("eco",      raw_economy["eco_score"],  rate=0.04)
+
+        data = {
+            "speed":   speed,
+            "rpm":     rpm,
+            "gear":    gear,
+            "gps":     gps_data,
+            "radar":   radar_data,
+            "tyres":   tyre_data,
+            "engine": {
+                "coolant_temp": coolant,
+                "oil_temp":     oil,
+                "battery_v":    battery,
+                "throttle":     throttle,
+                "boost_psi":    boost,
+            },
+            "economy": {
+                "mpg_instant": mpg_inst,
+                "mpg_trip":    raw_economy["mpg_trip"],
+                "eco_score":   eco_sc,
+                "range_mi":    raw_economy["range_mi"],
+            },
+        }
+
+        # 4. Draw
+        draw_background(theme)
+        draw_map_panel(screen, gps_data, current_mode, theme)
+
+        # Mode tabs (top of right panel)
+        draw_mode_tabs(screen, current_mode, frame_count)
+
+        if current_mode == "race":
+            draw_race_panel(screen, data, theme, frame_count)
+        elif current_mode == "eco":
+            draw_eco_panel(screen, data, theme, frame_count)
+        elif current_mode == "care":
+            draw_care_panel(screen, data, theme, frame_count)
+
+        draw_radar_panel(screen, radar_data, theme, frame_count)
 
         pygame.display.flip()
         clock.tick(config.FPS)
-        frame_count += 1   # increment every frame for animations
+        frame_count += 1
 
 
 if __name__ == "__main__":

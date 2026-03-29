@@ -1,74 +1,67 @@
 # ui/radar_alert.py
+# Radar detector panel — bottom strip of the right panel.
+
 import pygame
 import math
 import config
+from ui.gauges import _f
 
-def draw_radar_panel(screen, radar_data, frame_count):
 
-    # Panel boundaries
-    x          = config.MAP_PANEL_WIDTH + 10
-    y          = config.SCREEN_HEIGHT - config.RADAR_PANEL_HEIGHT + 8
-    pan_w      = config.GAUGE_PANEL_WIDTH - 20
-    pan_h      = config.RADAR_PANEL_HEIGHT - 16
+def draw_radar_panel(screen, radar_data, theme, frame_count):
+    x    = config.MAP_PANEL_WIDTH + 10
+    y    = config.SCREEN_HEIGHT - config.RADAR_PANEL_HEIGHT + 6
+    pw   = config.GAUGE_PANEL_WIDTH - 20
+    ph   = config.RADAR_PANEL_HEIGHT - 12
 
-    # Fonts
-    font_title  = pygame.font.SysFont("consolas", 15)
-    font_band   = pygame.font.SysFont("consolas", 36, bold=True)
-    font_status = pygame.font.SysFont("consolas", 28, bold=True)
-    font_small  = pygame.font.SysFont("consolas", 14)
+    accent = theme["accent"]
 
-    # --- Draw solid panel background ---
-    # This replaces the transparent glow — much more visible on dark screens
+    # ── Panel background ─────────────────────────────────────
     if radar_data["alert"]:
-        # Pulse the background between dark red and bright red
-        pulse = (math.sin(frame_count * 0.15) + 1) / 2   # 0.0 → 1.0
-        r = int(80 + pulse * 120)   # red channel pulses from 80 to 200
-        bg_color = (r, 0, 0)
+        pulse   = (math.sin(frame_count * 0.18) + 1) / 2
+        r_ch    = int(70 + pulse * 100)
+        bg_col  = (r_ch, 8, 8)
+        brd_col = (200, 30, 30)
     else:
-        # Subtle slow green pulse for all clear
-        pulse = (math.sin(frame_count * 0.05) + 1) / 2
-        g = int(20 + pulse * 30)    # very subtle green
-        bg_color = (0, g, 0)
+        pulse   = (math.sin(frame_count * 0.05) + 1) / 2
+        g_ch    = int(14 + pulse * 18)
+        bg_col  = (6, g_ch, 6)
+        brd_col = theme["divider"]
 
-    # Draw the solid background rectangle for the panel
-    pygame.draw.rect(screen, bg_color, (x, y, pan_w, pan_h), border_radius=6)
+    pygame.draw.rect(screen, bg_col, (x, y, pw, ph), border_radius=7)
+    pygame.draw.rect(screen, brd_col, (x, y, pw, ph), 2, border_radius=7)
 
-    # Draw accent border around panel
-    pygame.draw.rect(screen, config.ACCENT, (x, y, pan_w, pan_h), 2, border_radius=6)
-
-    # --- Panel title ---
-    title_surf = font_title.render("RADAR DETECTOR", True, config.ACCENT)
-    screen.blit(title_surf, (x + 10, y + 8))
+    # ── Title bar ────────────────────────────────────────────
+    f_title = _f(12)
+    title_s = f_title.render("RADAR DETECTOR", True, accent)
+    screen.blit(title_s, (x + 10, y + 7))
 
     if radar_data["alert"]:
+        # ── Band label ────────────────────────────────────────
+        f_band = _f(32, bold=True)
+        band_s = f_band.render(f"\u26a0  {radar_data['band']}", True, (255, 255, 255))
+        screen.blit(band_s, (x + 10, y + 24))
 
-        # --- Band label ---
-        band_surf = font_band.render(f"⚠  {radar_data['band']}", True, config.WHITE)
-        screen.blit(band_surf, (x + 10, y + 28))
-
-        # --- Signal strength bars ---
-        bar_x     = x + 10
-        bar_y     = y + 82
-        bar_w     = 18
-        bar_h_max = 32
-        gap       = 10
-        strength  = radar_data["strength"]
-
+        # ── Signal strength bars ──────────────────────────────
+        str_val = radar_data["strength"]
+        bx, by0 = x + 10, y + 68
+        bw, bh_max, gap = 20, 36, 9
         for i in range(5):
-            bar_h   = int(bar_h_max * (0.4 + i * 0.15))
-            bar_top = bar_y + (bar_h_max - bar_h)
-            color   = config.WHITE if i < strength else (80, 30, 30)
-            pygame.draw.rect(screen, color, (bar_x + i * (bar_w + gap), bar_top, bar_w, bar_h))
+            bh  = int(bh_max * (0.35 + i * 0.165))
+            top = by0 + (bh_max - bh)
+            col = (220, 220, 220) if i < str_val else (70, 25, 25)
+            pygame.draw.rect(screen, col,
+                             (bx + i * (bw + gap), top, bw, bh),
+                             border_radius=2)
 
-        # Strength label
-        s_surf = font_small.render(f"SIGNAL: {strength}/5", True, config.WHITE)
-        screen.blit(s_surf, (x + 10, y + 122))
+        f_sig = _f(12)
+        sig_s = f_sig.render(f"SIGNAL  {str_val}/5", True, (200, 200, 200))
+        screen.blit(sig_s, (x + 10, y + ph - 20))
 
     else:
-
-        # --- All clear ---
-        clear_surf = font_status.render("✓  ALL CLEAR", True, config.GREEN)
-        screen.blit(clear_surf, (x + 10, y + 35))
-
-        sub_surf = font_small.render("No signals detected", True, (180, 180, 180))
-        screen.blit(sub_surf, (x + 10, y + 72))
+        # ── All clear ────────────────────────────────────────
+        f_clr = _f(26, bold=True)
+        f_sub = _f(12)
+        clr_s = f_clr.render("\u2713  ALL CLEAR", True, (80, 220, 90))
+        sub_s = f_sub.render("No signals detected", True, (100, 130, 100))
+        screen.blit(clr_s, (x + 10, y + 26))
+        screen.blit(sub_s, (x + 10, y + 62))
